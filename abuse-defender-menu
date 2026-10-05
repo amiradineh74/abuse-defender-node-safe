@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+MANAGER=/usr/local/sbin/abuse-defender-node
+BOOT_GUARD=/usr/local/sbin/abuse-defender-boot-guard
+
+[[ ${EUID:-999} -eq 0 ]] || { echo "Please run as root."; exit 1; }
+[[ -x "$MANAGER" ]] || { echo "Abuse Defender Node Safe is not installed correctly."; exit 1; }
+
+pause(){ echo; read -r -p "Press Enter to continue..." _; }
+line(){ printf '%*s\n' 62 '' | tr ' ' '-'; }
+
+yesno(){
+  local prompt=$1 ans
+  read -r -p "$prompt [y/N]: " ans
+  [[ "$ans" =~ ^[Yy]$ ]]
+}
+
+status_badge(){
+  if iptables -C OUTPUT -j PGAD_ABUSE_GUARD >/dev/null 2>&1; then
+    printf "ACTIVE"
+  else
+    printf "INACTIVE"
+  fi
+}
+
+auto_badge(){
+  if systemctl is-enabled abuse-defender-node-update.timer >/dev/null 2>&1; then
+    printf "ON"
+  else
+    printf "OFF"
+  fi
+}
+
+boot_badge(){
+  if systemctl is-enabled abuse-defender-node.service >/dev/null 2>&1; then
+    printf "ON"
+  else
+    printf "OFF"
+  fi
+}
+
+show_header(){
+  clear
+  echo "=============================================================="
+  echo "              Abuse Defender Node Safe"
+  echo "=============================================================="
+  echo " Protection : $(status_badge)"
+  echo " Boot Start : $(boot_badge)"
+  echo " Auto Update: $(auto_badge)"
+  echo "=============================================================="
+}
+
+manage_whitelist(){
+  while true; do
+    show_header
+    echo " WHITELIST MANAGEMENT"
+    line
+    echo " 1) Show whitelist"
+    echo " 2) Add IP / CIDR"
+    echo " 3) Remove IP / CIDR"
+    echo " 0) Back"
+    line
+    read -r -p "Select: " c
+    case "$c" in
+      1) "$MANAGER" list-whitelist; pause ;;
+      2) read -r -p "Enter IP/CIDR (example 1.2.3.4/32): " x; "$MANAGER" add-whitelist "$x"; pause ;;
+      3) "$MANAGER" list-whitelist; echo; read -r -p "Enter exact IP/CIDR to remove: " x; "$MANAGER" remove-whitelist "$x"; pause ;;
+      0) return ;;
+      *) echo "Invalid choice."; sleep 1 ;;
+    esac
+  done
+}
+
+manage_blocks(){
+  while true; do
+    show_header
+    echo " CUSTOM BLOCK MANAGEMENT"
+    line
+    echo " 1) Show custom blocks"
+    echo " 2) Add IP / CIDR"
+    echo " 3) Remove IP / CIDR"
+    echo " 0) Back"
+    line
+    read -r -p "Select: " c
+    case "$c" in
+      1) "$MANAGER" list-blocks; pause ;;
+      2) read -r -p "Enter IP/CIDR to block: " x; "$MANAGER" add-block "$x"; pause ;;
+      3) "$MANAGER" list-blocks; echo; read -r -p "Enter exact IP/CIDR to remove: " x; "$MANAGER" remove-block "$x"; pause ;;
+      0) return ;;
+      *) echo "Invalid choice."; sleep 1 ;;
+    esac
+  done
+}
+
+manage_auto_update(){
+  while true; do
+    show_header
+    echo " AUTO UPDATE"
+    line
+    echo " Current: $(auto_badge)"
+    echo
+    echo " 1) Enable daily automatic update"
+    echo " 2) Disable automatic update"
+    echo " 3) Update official list now"
+    echo " 4) Show timer details"
+    echo " 0) Back"
+    line
+    read -r -p "Select: " c
+    case "$c" in
+      1) "$MANAGER" auto-update-on; pause ;;
+      2) "$MANAGER" auto-update-off; pause ;;
+      3) "$MANAGER" update; pause ;;
+      4) "$MANAGER" auto-update-status || true; pause ;;
+      0) return ;;
+      *) echo "Invalid choice."; sleep 1 ;;
+    esac
+  done
+}
+
+manage_routes(){
+  while true; do
+    show_header
+    echo " BOOT SAFE ROUTES"
+    line
+    echo " These routes are waited for before firewall rules are applied at boot."
+    echo
+    echo " 1) Show captured routes"
+    echo " 2) Re-capture current safe routes"
+    echo " 0) Back"
+    line
+    read -r -p "Select: " c
+    case "$c" in
+      1) "$MANAGER" routes; pause ;;
+      2)
+        if yesno "Replace saved boot-safe routes with current routes?"; then
+          "$MANAGER" snapshot-routes
+        fi
+        pause
+        ;;
+      0) return ;;
+      *) echo "Invalid choice."; sleep 1 ;;
+    esac
+  done
+}
+
+main_menu(){
+  while true; do
+    show_header
+    echo " 1) Enable protection"
+    echo " 2) Disable protection"
+    echo " 3) Safe test (2-minute auto rollback)"
+    echo " 4) Status"
+    echo " 5) View firewall rules / counters"
+    echo " 6) Auto Update settings"
+    echo " 7) Whitelist management"
+    echo " 8) Custom Block management"
+    echo " 9) Boot Safe Routes"
+    echo "10) Re-apply rules now"
+    echo "11) Uninstall Abuse Defender Node Safe"
+    echo " 0) Exit"
+    line
+    read -r -p "Select: " c
+    case "$c" in
+      1)
+        if yesno "Enable protection now and on every boot?"; then
+          "$MANAGER" enable
+        fi
+        pause
+        ;;
+      2)
+        if yesno "Disable protection now and at boot?"; then
+          "$MANAGER" disable
+        fi
+        pause
+        ;;
+      3)
+        echo "Rules will be enabled for 2 minutes and then removed automatically."
+        if yesno "Start safe test?"; then
+          "$MANAGER" test
+        fi
+        pause
+        ;;
+      4) "$MANAGER" status; pause ;;
+      5) "$MANAGER" rules; pause ;;
+      6) manage_auto_update ;;
+      7) manage_whitelist ;;
+      8) manage_blocks ;;
+      9) manage_routes ;;
+      10) "$MANAGER" apply; pause ;;
+      11)
+        echo "This removes services/rules but keeps config files."
+        if yesno "Uninstall?"; then
+          "$MANAGER" uninstall
+          echo
+          echo "Uninstalled. Menu will now exit."
+          exit 0
+        fi
+        pause
+        ;;
+      0) exit 0 ;;
+      *) echo "Invalid choice."; sleep 1 ;;
+    esac
+  done
+}
+
+main_menu
