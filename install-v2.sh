@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 REPO_RAW='https://raw.githubusercontent.com/amiradineh74/abuse-defender-node-safe/main'
 MANAGER='/usr/local/sbin/abuse-defender-node'
+BOOT_GUARD='/usr/local/sbin/abuse-defender-boot-guard'
 CONF_DIR='/etc/abuse-defender-node'
 STATE_DIR='/var/lib/abuse-defender-node'
 
@@ -44,6 +45,13 @@ curl -fsSL "$REPO_RAW/abuse-defender-node" -o "$tmp"
 bash -n "$tmp"
 install -m 0755 "$tmp" "$MANAGER"
 
+tmp_guard=$(mktemp)
+curl -fsSL "$REPO_RAW/abuse-defender-boot-guard" -o "$tmp_guard"
+bash -n "$tmp_guard"
+install -m 0755 "$tmp_guard" "$BOOT_GUARD"
+rm -f "$tmp_guard"
+"$BOOT_GUARD" snapshot
+
 cat >/etc/systemd/system/abuse-defender-node.service <<'UNIT'
 [Unit]
 Description=Abuse Defender Node Safe - apply outbound abuse blocks
@@ -51,6 +59,7 @@ Wants=network-online.target
 After=network-online.target docker.service
 
 [Service]
+ExecStartPre=/usr/local/sbin/abuse-defender-boot-guard wait
 Type=oneshot
 ExecStart=/usr/local/sbin/abuse-defender-node apply
 ExecStop=/usr/local/sbin/abuse-defender-node stop
