@@ -1,30 +1,6 @@
 # Abuse Defender Node Safe
 
-نسخه‌ای سازگارتر از ایده‌ی Abuse Defender برای سرورهای Node که Docker / PasarGuard روی آن‌ها اجرا می‌شود.
-
-## هدف
-
-این پروژه لیست رسمی IPهای Abuse Defender را روی `OUTPUT` اعمال می‌کند، اما از روش persistence نسخه اصلی استفاده نمی‌کند تا با Docker، PasarGuard Node و Boot سرور تداخل کمتری داشته باشد.
-
-### تفاوت‌های اصلی
-
-- بدون نصب `iptables-persistent` یا `netfilter-persistent`
-- بدون ذخیره و Restore کامل `iptables-save`
-- مدیریت فقط Chain اختصاصی پروژه
-- Whitelist خودکار برای IPهای محلی، Default Gateway، Routeهای local و Docker subnetها
-- Test Mode دو دقیقه‌ای با Rollback خودکار
-- اعمال مجدد Ruleهای اختصاصی با systemd پس از Boot
-- آپدیت روزانه لیست رسمی upstream
-- پشتیبانی از whitelist و custom block
-
-## Upstream
-
-این پروژه بر پایه ایده و لیست رسمی پروژه زیر ساخته شده است:
-
-- https://github.com/Kiya6955/Abuse-Defender
-- Author: Kiya6955
-
-لیست Abuse مستقیماً از upstream دریافت می‌شود و Rangeهای آن حذف نمی‌شوند.
+نسخه‌ای سازگار با Docker / PasarGuard Node که از لیست رسمی Abuse Defender استفاده می‌کند، اما از persistence کامل iptables استفاده نمی‌کند.
 
 ## نصب
 
@@ -32,36 +8,46 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/amiradineh74/abuse-defender-node-safe/main/install.sh)
 ```
 
-Installer ابتدا فقط Test Mode دو دقیقه‌ای را فعال می‌کند. قبل از تأیید، SSH، Docker و Online بودن Node را بررسی کنید.
-
-در صورت سالم بودن:
+بعد از نصب، منوی مدیریت باز می‌شود. هر زمان هم می‌توان با این دستور دوباره منو را باز کرد:
 
 ```bash
-abuse-defender-node confirm
+abuse-defender
 ```
 
-وضعیت:
+## قابلیت‌های منو
 
-```bash
-abuse-defender-node status
-```
+- فعال یا غیرفعال کردن Protection
+- Safe Test دو دقیقه‌ای با Rollback خودکار
+- مشاهده Status
+- مشاهده Ruleها و Counterها
+- روشن/خاموش کردن Auto Update روزانه
+- آپدیت دستی لیست رسمی
+- افزودن/حذف Whitelist
+- افزودن/حذف Custom Block
+- مشاهده و Refresh کردن Boot Safe Routes
+- Re-apply دستی Ruleها
+- Uninstall
 
-حذف Ruleهای پروژه:
+## طراحی ایمن برای Node
 
-```bash
-abuse-defender-node stop
-```
+- بدون `iptables-persistent` و `netfilter-persistent`
+- بدون Restore کامل `iptables-save`
+- فقط Chain اختصاصی `PGAD_ABUSE_GUARD`
+- عدم Flush یا تغییر Ruleهای Docker / BackPack
+- Whitelist خودکار برای آدرس‌های محلی، Gateway، Routeهای link و Docker subnetها
+- Boot Guard: قبل از اعمال Ruleها در Boot منتظر Routeهای حیاتی ثبت‌شده می‌ماند
+- اگر Routeهای ضروری آماده نشوند، Firewall پروژه اعمال نمی‌شود
+- لیست رسمی upstream بدون حذف Rangeها استفاده می‌شود
 
-Uninstall:
+## Upstream
 
-```bash
-abuse-defender-node uninstall
-```
+پروژه و لیست اصلی:
 
-## مهم
+- https://github.com/Kiya6955/Abuse-Defender
+- Author: Kiya6955
 
-این پروژه نباید هم‌زمان با نصب قدیمی Abuse Defender یا `iptables-persistent/netfilter-persistent` استفاده شود. Installer در صورت تشخیص آن‌ها متوقف می‌شود.
+لیست IPها مستقیماً از upstream دریافت می‌شود.
 
 ## License / Attribution
 
-پروژه upstream دارای مجوز سفارشی است. فایل `UPSTREAM-LICENSE.txt` را ببینید. این مخزن وابستگی یا تأیید رسمی از طرف سازنده اصلی را ادعا نمی‌کند.
+مجوز upstream در فایل `UPSTREAM-LICENSE.txt` قرار دارد. این پروژه وابستگی یا تأیید رسمی از طرف سازنده اصلی را ادعا نمی‌کند.
