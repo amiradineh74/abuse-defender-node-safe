@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CONF_DIR=/etc/abuse-defender-node
+REQ_FILE="$CONF_DIR/required-routes.txt"
+TIMEOUT="${ABUSE_DEFENDER_ROUTE_WAIT_TIMEOUT:-120}"
+
+mkdir -p "$CONF_DIR"
+
+current_route_keys() {
+  ip -4 route show table main | awk '$1 != "default" {print $1}'
+}
+
+is_protected_local_route() {
+  python3 - "$1" <<'PY' >/dev/null
+import ipaddress, sys
+s=sys.argv[1]
+try:
+    n=ipaddress.ip_network(s if '/' in s else s + '/32', strict=False)
+except ValueError:
+    raise SystemExit(1)
+guards=[
+    ipaddress.ip_network('10.0.0.0/8'),
+    ipaddress.ip_network('100.64.0.0/10'),
+    ipaddress.ip_network('169.254.0.0/16'),
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.0.0/16'),
+]
+raise SystemExit(0 if any(n.overlaps(g) for g in guards) else 1)
+PY
+}
+
+snapshot() {
+  tmp=$(mktemp)
+  trap 'rm -f "$tmp"' EXIT
+  while read -r route; do
+    [[ -n "$route" ]] || continue
+    if is_protected_local_route "$route"; then
+      echo "$route" >> "$tmp"
+    fi
+  done < <(current_route_keys)
+  sort -u "$tmp" > "$REQ_FILE"
+  chmod 600 "$REQ_FILE"
+  echo '[boot-guard] Required local routes captured:'
+  cat "$REQ_FILE"
+}
+
+wait_routes() {
+  [[ -s "$REQ_FILE" ]] || { echo '[boot-guard] No required-routes snapshot; refusing to apply firewall at boot.' >&2; exit 1; }
+  deadline=$((SECONDS + TIMEOUT))
+  while (( SECONDS < deadline )); do
+    missing=0
+    now=$(current_route_keys)
+    while read -r route; do
+      [[ -n "$route" ]] || continue
+      if ! grep -Fxq "$route" <<<"$now"; then
+        missing=1
+        break
+      fi
+    done < "$REQ_FILE"
+    if (( missing == 0 )); then
+      echo '[boot-guard] Required local routes are ready.'
+      exit 0
+    fi
+    sleep 2
+  done
+  echo '[boot-guard] Timeout waiting for required local routes. Firewall was NOT applied.' >&2
+  echo '[boot-guard] Expected:' >&2
+  cat "$REQ_FILE" >&2
+  echo '[boot-guard] Current:' >&2
+  current_route_keys >&2
+  exit 1
+}
+
+case "${1:-}" in
+  snapshot) snapshot ;;
+  wait) wait_routes ;;
+  *) echo 'Usage: abuse-defender-boot-guard {snapshot|wait}' >&2; exit 2 ;;
+esac
