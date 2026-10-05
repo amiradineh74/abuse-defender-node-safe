@@ -8,6 +8,7 @@ STATE_DIR=/var/lib/abuse-defender-node
 LIST_FILE="$STATE_DIR/abuse-ips.ipv4"
 WL_FILE="$CONF_DIR/whitelist.txt"
 CUSTOM_FILE="$CONF_DIR/custom-block.txt"
+REQ_FILE="$CONF_DIR/required-routes.txt"
 CHAIN='PGAD_ABUSE_GUARD'
 HOSTS_MARK='# abuse-defender-node-safe'
 IPT=(iptables -w 10)
@@ -26,7 +27,7 @@ ensure_dirs(){
 valid_cidr(){
   python3 - "$1" <<'PY' >/dev/null
 import ipaddress, sys
-n = ipaddress.ip_network(sys.argv[1], strict=False)
+n=ipaddress.ip_network(sys.argv[1], strict=False)
 if n.version != 4:
     raise SystemExit(1)
 PY
@@ -64,7 +65,7 @@ fetch_list(){
   local tmp count
   tmp=$(mktemp "$STATE_DIR/.abuse-ips.XXXXXX")
   trap 'rm -f "$tmp"' RETURN
-  curl --fail --silent --show-error --location        --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2        "$UPSTREAM" -o "$tmp"
+  curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 "$UPSTREAM" -o "$tmp"
   count=$(validate_file "$tmp") || die 'Downloaded upstream list failed validation; current rules were left untouched.'
   mv -f "$tmp" "$LIST_FILE"
   chmod 600 "$LIST_FILE"
@@ -74,38 +75,23 @@ fetch_list(){
 
 dynamic_whitelist(){
   echo '127.0.0.0/8'
-
-  ip -o -4 addr show 2>/dev/null |
-    awk '{split($4,a,"/"); if (a[1] != "") print a[1]"/32"}'
-
-  ip -4 route show default 2>/dev/null |
-    awk '/^default/ && $3 ~ /^[0-9.]+$/ {print $3"/32"; exit}'
-
-  ip -4 route show table main scope link 2>/dev/null |
-    awk '$1 ~ /^[0-9]+\./ {print $1}'
-
+  ip -o -4 addr show 2>/dev/null | awk '{split($4,a,"/"); if (a[1] != "") print a[1]"/32"}'
+  ip -4 route show default 2>/dev/null | awk '/^default/ && $3 ~ /^[0-9.]+$/ {print $3"/32"; exit}'
+  ip -4 route show table main scope link 2>/dev/null | awk '$1 ~ /^[0-9]+\./ {print $1}'
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     docker network ls -q 2>/dev/null | while read -r id; do
       [[ -n "$id" ]] || continue
-      docker network inspect "$id"         --format '{{range .IPAM.Config}}{{if .Subnet}}{{.Subnet}}{{"\n"}}{{end}}{{end}}'         2>/dev/null || true
+      docker network inspect "$id" --format '{{range .IPAM.Config}}{{if .Subnet}}{{.Subnet}}{{"\n"}}{{end}}{{end}}' 2>/dev/null || true
     done
   fi
 }
 
 ensure_hosts(){
-  grep -Fq "127.0.0.1 appclick.co $HOSTS_MARK" /etc/hosts 2>/dev/null ||
-    echo "127.0.0.1 appclick.co $HOSTS_MARK" >> /etc/hosts
-  grep -Fq "127.0.0.1 pushnotificationws.com $HOSTS_MARK" /etc/hosts 2>/dev/null ||
-    echo "127.0.0.1 pushnotificationws.com $HOSTS_MARK" >> /etc/hosts
+  grep -Fq "127.0.0.1 appclick.co $HOSTS_MARK" /etc/hosts 2>/dev/null || echo "127.0.0.1 appclick.co $HOSTS_MARK" >> /etc/hosts
+  grep -Fq "127.0.0.1 pushnotificationws.com $HOSTS_MARK" /etc/hosts 2>/dev/null || echo "127.0.0.1 pushnotificationws.com $HOSTS_MARK" >> /etc/hosts
 }
-
-remove_hosts(){
-  sed -i "\\|$HOSTS_MARK|d" /etc/hosts
-}
-
-ensure_chain(){
-  "${IPT[@]}" -N "$CHAIN" 2>/dev/null || true
-}
+remove_hosts(){ sed -i "\\|$HOSTS_MARK|d" /etc/hosts; }
+ensure_chain(){ "${IPT[@]}" -N "$CHAIN" 2>/dev/null || true; }
 
 remove_output_hooks(){
   while "${IPT[@]}" -C OUTPUT -j "$CHAIN" 2>/dev/null; do
@@ -113,39 +99,31 @@ remove_output_hooks(){
   done
 }
 
+protection_active(){ "${IPT[@]}" -C OUTPUT -j "$CHAIN" >/dev/null 2>&1; }
+
 apply_rules(){
-  need_root
-  ensure_dirs
+  need_root; ensure_dirs
   [[ -s "$LIST_FILE" ]] || fetch_list
   validate_file "$LIST_FILE" >/dev/null || die 'Cached official list is invalid.'
-
   ensure_chain
   "${IPT[@]}" -F "$CHAIN"
-
-  {
-    dynamic_whitelist
-    file_entries "$WL_FILE"
-  } | awk 'NF && !seen[$0]++' | while read -r cidr; do
+  { dynamic_whitelist; file_entries "$WL_FILE"; } | awk 'NF && !seen[$0]++' | while read -r cidr; do
     valid_cidr "$cidr" || die "Invalid whitelist CIDR: $cidr"
     "${IPT[@]}" -A "$CHAIN" -d "$cidr" -j RETURN
   done
-
   file_entries "$CUSTOM_FILE" | awk 'NF && !seen[$0]++' | while read -r cidr; do
     valid_cidr "$cidr" || die "Invalid custom block CIDR: $cidr"
     "${IPT[@]}" -A "$CHAIN" -d "$cidr" -j DROP
   done
-
   file_entries "$LIST_FILE" | awk 'NF' | while read -r cidr; do
     valid_cidr "$cidr" || die "Invalid upstream CIDR: $cidr"
     "${IPT[@]}" -A "$CHAIN" -d "$cidr" -j DROP
   done
-
   "${IPT[@]}" -A "$CHAIN" -j RETURN
   remove_output_hooks
   "${IPT[@]}" -I OUTPUT 1 -j "$CHAIN"
   ensure_hosts
-
-  log 'Rules applied to OUTPUT. No Docker/BackPack chains were flushed or restored.'
+  log 'Rules applied to OUTPUT. Docker/BackPack rules were not flushed or restored.'
 }
 
 stop_rules(){
@@ -158,11 +136,7 @@ stop_rules(){
   log 'Project rules removed; other firewall rules were left untouched.'
 }
 
-update_rules(){
-  need_root
-  fetch_list
-  apply_rules
-}
+update_rules(){ need_root; fetch_list; apply_rules; }
 
 schedule_rollback(){
   local unit="abuse-defender-node-rollback-$(date +%s)-$$"
@@ -182,75 +156,138 @@ cancel_rollback(){
   rm -f "$STATE_DIR/rollback-unit"
 }
 
-confirm_rules(){
-  need_root
-  cancel_rollback
-  systemctl enable abuse-defender-node.service abuse-defender-node-update.timer >/dev/null
+enable_protection(){
+  need_root; cancel_rollback
+  systemctl enable abuse-defender-node.service >/dev/null
   systemctl start abuse-defender-node.service
-  systemctl start abuse-defender-node-update.timer
-  log 'Confirmed: boot apply and daily upstream update enabled.'
+  log 'Protection enabled now and at boot.'
 }
 
-status_rules(){
-  echo '=== OUTPUT hook ==='
-  "${IPT[@]}" -S OUTPUT 2>/dev/null | grep -F "$CHAIN" || echo 'Not hooked'
-  echo
-  echo '=== Chain counters ==='
-  "${IPT[@]}" -L "$CHAIN" -n -v --line-numbers 2>/dev/null || echo 'Chain absent'
-  echo
-  echo '=== Cached list ==='
-  [[ -f "$LIST_FILE" ]] && { wc -l "$LIST_FILE"; stat -c 'mtime: %y' "$LIST_FILE" 2>/dev/null || true; } || echo 'No cached list'
-  echo
-  echo '=== systemd ==='
-  systemctl is-enabled abuse-defender-node.service 2>/dev/null || true
-  systemctl is-enabled abuse-defender-node-update.timer 2>/dev/null || true
-  systemctl is-active abuse-defender-node-update.timer 2>/dev/null || true
+disable_protection(){
+  need_root; cancel_rollback
+  systemctl disable --now abuse-defender-node.service 2>/dev/null || true
+  stop_rules
+  log 'Protection disabled. Auto-update setting was not changed.'
 }
+
+auto_update_on(){
+  need_root
+  systemctl enable --now abuse-defender-node-update.timer >/dev/null
+  log 'Daily automatic update enabled.'
+}
+
+auto_update_off(){
+  need_root
+  systemctl disable --now abuse-defender-node-update.timer >/dev/null 2>&1 || true
+  log 'Automatic update disabled.'
+}
+
+reapply_if_active(){ protection_active && apply_rules || true; }
 
 add_whitelist(){
   need_root; ensure_dirs
-  local cidr=${1:-}
-  [[ -n "$cidr" ]] || die 'Usage: add-whitelist CIDR'
+  local cidr=${1:-}; [[ -n "$cidr" ]] || die 'Usage: add-whitelist CIDR'
   valid_cidr "$cidr" || die 'Invalid IPv4 CIDR.'
   grep -Fxq "$cidr" "$WL_FILE" || echo "$cidr" >> "$WL_FILE"
-  apply_rules
+  reapply_if_active
+}
+
+remove_whitelist(){
+  need_root; ensure_dirs
+  local cidr=${1:-}; [[ -n "$cidr" ]] || die 'Usage: remove-whitelist CIDR'
+  local tmp; tmp=$(mktemp)
+  awk -v x="$cidr" '$0 != x' "$WL_FILE" > "$tmp"
+  mv -f "$tmp" "$WL_FILE"; chmod 600 "$WL_FILE"
+  reapply_if_active
 }
 
 add_block(){
   need_root; ensure_dirs
-  local cidr=${1:-}
-  [[ -n "$cidr" ]] || die 'Usage: add-block CIDR'
+  local cidr=${1:-}; [[ -n "$cidr" ]] || die 'Usage: add-block CIDR'
   valid_cidr "$cidr" || die 'Invalid IPv4 CIDR.'
   grep -Fxq "$cidr" "$CUSTOM_FILE" || echo "$cidr" >> "$CUSTOM_FILE"
-  apply_rules
+  reapply_if_active
+}
+
+remove_block(){
+  need_root; ensure_dirs
+  local cidr=${1:-}; [[ -n "$cidr" ]] || die 'Usage: remove-block CIDR'
+  local tmp; tmp=$(mktemp)
+  awk -v x="$cidr" '$0 != x' "$CUSTOM_FILE" > "$tmp"
+  mv -f "$tmp" "$CUSTOM_FILE"; chmod 600 "$CUSTOM_FILE"
+  reapply_if_active
+}
+
+show_file(){
+  local f=$1
+  if [[ -s "$f" ]]; then nl -ba "$f"; else echo '(empty)'; fi
+}
+
+status_rules(){
+  echo '=== Protection ==='
+  protection_active && echo 'runtime: active' || echo 'runtime: inactive'
+  printf 'boot: '; systemctl is-enabled abuse-defender-node.service 2>/dev/null || true
+  printf 'service: '; systemctl is-active abuse-defender-node.service 2>/dev/null || true
+  echo
+  echo '=== Auto Update ==='
+  printf 'timer enabled: '; systemctl is-enabled abuse-defender-node-update.timer 2>/dev/null || true
+  printf 'timer active: '; systemctl is-active abuse-defender-node-update.timer 2>/dev/null || true
+  systemctl list-timers abuse-defender-node-update.timer --no-pager 2>/dev/null | tail -n +2 || true
+  echo
+  echo '=== Official List ==='
+  if [[ -f "$LIST_FILE" ]]; then
+    printf 'networks: '; file_entries "$LIST_FILE" | wc -l
+    stat -c 'updated: %y' "$LIST_FILE" 2>/dev/null || true
+  else
+    echo 'not downloaded'
+  fi
+  echo
+  echo '=== Boot Safe Routes ==='
+  if [[ -s "$REQ_FILE" ]]; then cat "$REQ_FILE"; else echo '(not captured)'; fi
+}
+
+show_rules(){
+  echo '=== OUTPUT ==='; "${IPT[@]}" -S OUTPUT
+  echo; echo '=== PGAD_ABUSE_GUARD ==='
+  "${IPT[@]}" -L "$CHAIN" -n -v --line-numbers 2>/dev/null || echo 'Chain absent'
 }
 
 uninstall_all(){
-  need_root
-  cancel_rollback
+  need_root; cancel_rollback
   systemctl disable --now abuse-defender-node-update.timer 2>/dev/null || true
-  systemctl disable abuse-defender-node.service 2>/dev/null || true
+  systemctl disable --now abuse-defender-node.service 2>/dev/null || true
   stop_rules
   remove_hosts
-  rm -f /etc/systemd/system/abuse-defender-node.service         /etc/systemd/system/abuse-defender-node-update.service         /etc/systemd/system/abuse-defender-node-update.timer
+  rm -f /etc/systemd/system/abuse-defender-node.service /etc/systemd/system/abuse-defender-node-update.service /etc/systemd/system/abuse-defender-node-update.timer
   systemctl daemon-reload
-  log 'Uninstalled runtime/systemd integration. Config and cached list were kept.'
+  log 'Runtime/systemd integration removed. Config/list files were kept.'
 }
 
 need_root
 case "${1:-}" in
   test) fetch_list; apply_rules; schedule_rollback ;;
-  confirm) confirm_rules ;;
+  confirm|enable) enable_protection ;;
+  disable) disable_protection ;;
   apply) apply_rules ;;
-  update) update_rules ;;
   stop) stop_rules ;;
-  status) status_rules ;;
+  update) update_rules ;;
   fetch) fetch_list ;;
+  status) status_rules ;;
+  rules) show_rules ;;
+  auto-update-on) auto_update_on ;;
+  auto-update-off) auto_update_off ;;
+  auto-update-status) systemctl status abuse-defender-node-update.timer --no-pager ;;
+  list-whitelist) ensure_dirs; show_file "$WL_FILE" ;;
   add-whitelist) add_whitelist "${2:-}" ;;
+  remove-whitelist) remove_whitelist "${2:-}" ;;
+  list-blocks) ensure_dirs; show_file "$CUSTOM_FILE" ;;
   add-block) add_block "${2:-}" ;;
+  remove-block) remove_block "${2:-}" ;;
+  routes) [[ -s "$REQ_FILE" ]] && cat "$REQ_FILE" || echo '(not captured)' ;;
+  snapshot-routes) /usr/local/sbin/abuse-defender-boot-guard snapshot ;;
   uninstall) uninstall_all ;;
   *)
-    echo 'Usage: abuse-defender-node {test|confirm|apply|update|stop|status|fetch|add-whitelist CIDR|add-block CIDR|uninstall}'
+    echo 'Usage: abuse-defender-node {test|enable|disable|apply|stop|update|fetch|status|rules|auto-update-on|auto-update-off|auto-update-status|list-whitelist|add-whitelist CIDR|remove-whitelist CIDR|list-blocks|add-block CIDR|remove-block CIDR|routes|snapshot-routes|uninstall}'
     exit 1
     ;;
 esac
