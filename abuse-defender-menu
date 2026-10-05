@@ -190,14 +190,44 @@ main_menu(){
       9) manage_routes ;;
       10) "$MANAGER" apply; pause ;;
       11)
-        echo "This removes services/rules but keeps config files."
-        if yesno "Uninstall?"; then
-          "$MANAGER" uninstall
+        while true; do
+          show_header
+          echo " UNINSTALL"
+          line
+          echo " 1) Remove runtime only"
+          echo "    - Removes firewall rules and systemd services"
+          echo "    - Keeps config, cached list and command files"
           echo
-          echo "Uninstalled. Menu will now exit."
-          exit 0
-        fi
-        pause
+          echo " 2) Full uninstall (remove everything)"
+          echo "    - Removes rules, services, config, cache, backups"
+          echo "    - Removes all Abuse Defender Node Safe command files"
+          echo
+          echo " 0) Back"
+          line
+          read -r -p "Select: " u
+          case "$u" in
+            1)
+              if yesno "Remove runtime only?"; then
+                "$MANAGER" uninstall-runtime
+                echo
+                echo "Runtime removed. Configuration and command files were kept."
+                pause
+                return
+              fi
+              ;;
+            2)
+              echo "WARNING: This removes all Abuse Defender Node Safe files from this server."
+              if yesno "Full uninstall and remove everything?"; then
+                "$MANAGER" uninstall-full
+                echo
+                echo "Full uninstall complete. Menu will now exit."
+                exit 0
+              fi
+              ;;
+            0) break ;;
+            *) echo "Invalid choice."; sleep 1 ;;
+          esac
+        done
         ;;
       0) exit 0 ;;
       *) echo "Invalid choice."; sleep 1 ;;
