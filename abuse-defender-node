@@ -252,15 +252,31 @@ show_rules(){
   "${IPT[@]}" -L "$CHAIN" -n -v --line-numbers 2>/dev/null || echo 'Chain absent'
 }
 
-uninstall_all(){
+uninstall_runtime(){
   need_root; cancel_rollback
   systemctl disable --now abuse-defender-node-update.timer 2>/dev/null || true
   systemctl disable --now abuse-defender-node.service 2>/dev/null || true
   stop_rules
   remove_hosts
-  rm -f /etc/systemd/system/abuse-defender-node.service /etc/systemd/system/abuse-defender-node-update.service /etc/systemd/system/abuse-defender-node-update.timer
+  rm -f \
+    /etc/systemd/system/abuse-defender-node.service \
+    /etc/systemd/system/abuse-defender-node-update.service \
+    /etc/systemd/system/abuse-defender-node-update.timer
   systemctl daemon-reload
-  log 'Runtime/systemd integration removed. Config/list files were kept.'
+  log 'Runtime removed. Config, cached list and command files were kept.'
+}
+
+uninstall_full(){
+  need_root
+  uninstall_runtime
+  rm -rf "$CONF_DIR" "$STATE_DIR"
+  rm -f /root/abuse-defender-node-before-install-*.v4
+  rm -f \
+    /usr/local/sbin/abuse-defender \
+    /usr/local/sbin/abuse-defender-boot-guard \
+    /usr/local/sbin/abuse-defender-node
+  systemctl daemon-reload
+  log 'Full uninstall complete. Rules, services, configs, cache, backups and command files were removed.'
 }
 
 need_root
@@ -285,9 +301,10 @@ case "${1:-}" in
   remove-block) remove_block "${2:-}" ;;
   routes) [[ -s "$REQ_FILE" ]] && cat "$REQ_FILE" || echo '(not captured)' ;;
   snapshot-routes) /usr/local/sbin/abuse-defender-boot-guard snapshot ;;
-  uninstall) uninstall_all ;;
+  uninstall|uninstall-runtime) uninstall_runtime ;;
+  uninstall-full) uninstall_full ;;
   *)
-    echo 'Usage: abuse-defender-node {test|enable|disable|apply|stop|update|fetch|status|rules|auto-update-on|auto-update-off|auto-update-status|list-whitelist|add-whitelist CIDR|remove-whitelist CIDR|list-blocks|add-block CIDR|remove-block CIDR|routes|snapshot-routes|uninstall}'
+    echo 'Usage: abuse-defender-node {test|enable|disable|apply|stop|update|fetch|status|rules|auto-update-on|auto-update-off|auto-update-status|list-whitelist|add-whitelist CIDR|remove-whitelist CIDR|list-blocks|add-block CIDR|remove-block CIDR|routes|snapshot-routes|uninstall-runtime|uninstall-full}'
     exit 1
     ;;
 esac
